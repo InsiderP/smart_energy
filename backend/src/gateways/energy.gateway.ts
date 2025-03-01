@@ -3,42 +3,74 @@ import {
     WebSocketServer,
     OnGatewayConnection,
     OnGatewayDisconnect,
+    SubscribeMessage,
   } from '@nestjs/websockets';
   import { Server, Socket } from 'socket.io';
   import { EnergyService } from '../services/energy.service';
+  import { startOfDay, endOfDay } from 'date-fns';
   
   @WebSocketGateway({
     cors: {
-      origin: '*',
+      origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+      credentials: true,
     },
   })
   export class EnergyGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @WebSocketServer()
     server: Server;
   
-    private interval: NodeJS.Timeout;
+    private connectedClients = 0;
   
     constructor(private readonly energyService: EnergyService) {}
   
     handleConnection(client: Socket) {
-      console.log(`Client connected: ${client.id}`);
-      this.startEmitting();
+      this.connectedClients++;
+      console.log(`Client connected: ${client.id}, Total clients: ${this.connectedClients}`);
+      
+      // Emit initial dashboard data to the newly connected client
+      this.emitDashboardData(client);
     }
   
     handleDisconnect(client: Socket) {
-      console.log(`Client disconnected: ${client.id}`);
-      if (this.server.engine.clientsCount === 0) {
-        clearInterval(this.interval);
+      this.connectedClients--;
+      console.log(`Client disconnected: ${client.id}, Total clients: ${this.connectedClients}`);
+    }
+  
+    @SubscribeMessage('getDashboardData')
+    async handleDashboardData(client: Socket) {
+      await this.emitDashboardData(client);
+    }
+  
+    private async emitDashboardData(client: Socket) {
+      try {
+        const dashboardData = await this.energyService.getDashboardData();
+        client.emit('dashboardData', dashboardData);
+      } catch (error) {
+        console.error('Error fetching dashboard data:', error);
+        client.emit('error', { message: 'Failed to fetch dashboard data' });
       }
     }
   
-    private startEmitting() {
-      if (!this.interval) {
-        this.interval = setInterval(async () => {
-          const data = await this.energyService.generateRealtimeData();
-          await this.energyService.saveEnergyData(data);
-          this.server.emit('energyData', data);
-        }, 1000);
+    @SubscribeMessage('getHistoricalData')
+    async handleHistoricalData(client: Socket, date: string) {
+      try {
+        const parsedDate = new Date(date); // Ensure the date is parsed correctly
+        const data = await this.energyService.getHistoricalConsumption(startOfDay(parsedDate), endOfDay(parsedDate));
+        client.emit('historicalData', data);
+      } catch (error) {
+        console.error('Error fetching historical data:', error);
+        client.emit('error', { message: 'Failed to fetch historical data' });
       }
     }
+  
+    // @SubscribeMessage('getDeviceData')
+    // async handleDeviceData(client: Socket) {
+    //   try {
+    //     const deviceData = await this.energyService.getDeviceConsumption();
+    //     client.emit('deviceData', deviceData);
+    //   } catch (error) {
+    //     console.error('Error fetching device data:', error);
+    //     client.emit('error', { message: 'Failed to fetch device data' });
+    //   }
+    // }
   }
